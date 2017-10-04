@@ -14,6 +14,13 @@
 <body>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/87/three.min.js"></script>
 <script>
+    function randn() {
+        var u = 0, v = 0;
+        while(u === 0) u = Math.random(); //Converting [0,1) to (0,1)
+        while(v === 0) v = Math.random();
+        return Math.sqrt( -2.0 * Math.log( u ) ) * Math.cos( 2.0 * Math.PI * v );
+    }
+
     scene = new THREE.Scene();
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000); // field of view, aspect ratio, near/far clipping plane
     renderer = new THREE.WebGLRenderer({antialias: true});
@@ -22,14 +29,14 @@
 
     colors = [0xC0FF00, 0xE8960C, 0xFF0000, 0x570CE8, 0x0DD7FF];
     meshes = [];
-    for (let i = 0; i < 9**2; i++) {
+    for (let i = 0; i < 13; i++) {
 
         color = colors[Math.floor(Math.random() * colors.length)]; // random
         color = colors[i % colors.length]; //sequential
 
         meshes.push(new THREE.Mesh(
             new THREE.IcosahedronGeometry(0.25, 3),
-            new THREE.MeshPhongMaterial({shininess: 0,
+            new THREE.MeshPhongMaterial({shininess: 0.01,
                 color: color})));
         scene.add(meshes[i]);
     }
@@ -58,22 +65,24 @@
 
     camera.position.z = 5;
 
-    noise_scale = 0.0;
-    gamma = 0.1;
-    stepsize = 0.0000001;
+    noise_scale = 0.1;
+
+    stepsize = 0.001;
+    gamma = 0.01;
     sigma = 0.5;
-    epsilon = 10000000000.0;
+    epsilon = 1.0;
+
+    min_energy = 100000;
 
     function updateVelocitiesRandomly(h) {
-        // Note: Must replace (Math.random() - 0.5) with Normal random variable
         a = Math.exp(-gamma * h);
         b = Math.sqrt(1 - Math.exp(-2 * gamma * h));
 
 
         for (i = 0; i < meshes.length; i++) {
-            velocities[i].x = a * (velocities[i].x) + b * ((Math.random() - 0.5) * noise_scale);
-            velocities[i].y = a * (velocities[i].y) + b * ((Math.random() - 0.5) * noise_scale);
-            velocities[i].z = a * (velocities[i].z) + b * ((Math.random() - 0.5) * noise_scale);
+            velocities[i].x = a * (velocities[i].x) + b * (randn() * noise_scale);
+            velocities[i].y = a * (velocities[i].y) + b * (randn() * noise_scale);
+            velocities[i].z = a * (velocities[i].z) + b * (randn() * noise_scale);
         }
     }
 
@@ -103,6 +112,16 @@
         f.y = -4 * epsilon * ((6 * c.y * sigma ** 6) / (r2) ** (7 / 2) - (12 * c.y * sigma ** 12) / (r2) ** (13 / 2));
         f.z = -4 * epsilon * ((6 * c.z * sigma ** 6) / (r2) ** (7 / 2) - (12 * c.z * sigma ** 12) / (r2) ** (13 / 2));
         return f;
+    }
+
+    function evaluateEnergy() {
+        E = 0;
+        for (i = 0; i < meshes.length; i++) {
+            for (let j = 0; j < i; j++) {
+                E += lennardJonesPotential(positions[i], positions[j], sigma, epsilon);
+            }
+        }
+        return E;
     }
 
     function evaluateForces() {
@@ -157,31 +176,70 @@
         }
     }
 
-    // initialize on a 2D grid
-    pos_index = 0;
-    center = (sigma * Math.sqrt(meshes.length)/2);
-    for (i = 0; i < Math.sqrt(meshes.length); i ++ ) {
-        for (j = 0; j < Math.sqrt(meshes.length); j ++) {
-            positions[pos_index].x = i * sigma * 1.03 - center;
-            positions[pos_index].y = j * sigma * 1.03 - center;
-            pos_index += 1;
+    function recenter() {
+        centerOfMass = new THREE.Vector3(0,0,0);
+
+
+        for (i = 0; i < meshes.length; i++) {
+            centerOfMass.x += positions[i].x;
+            centerOfMass.y += positions[i].y;
+            centerOfMass.z += positions[i].z;
+        }
+
+        centerOfMass.x /= meshes.length;
+        centerOfMass.y /= meshes.length;
+        centerOfMass.z /= meshes.length;
+
+        for (i = 0; i < meshes.length; i++) {
+            positions[i].x -= centerOfMass.x;
+            positions[i].y -= centerOfMass.y;
+            positions[i].z -= centerOfMass.z;
         }
     }
 
+    pos_index = 0;
+    row_length = Math.floor(Math.sqrt(meshes.length));
+    center = (sigma * Math.sqrt(meshes.length)/2);
+
+    while (pos_index < meshes.length) {
+        positions[pos_index].x = (pos_index % row_length) * sigma * 1.1 - center;
+        positions[pos_index].y = Math.floor(pos_index / row_length) * sigma * 1.1 - center;
+        pos_index += 1;
+    }
+
     setMeshesToPositions();
+
+    // initialize velocities
+    for (i = 0; i < meshes.length; i++) {
+        velocities[i].x = (randn() * noise_scale);
+        velocities[i].y = (randn() * noise_scale);
+        velocities[i].z = (randn() * noise_scale);
+    }
+
+    console.log(evaluateEnergy());
 
     function animate() {
         requestAnimationFrame(animate); // e.g. pause when user navigates to another tab
         renderer.render(scene, camera);
 
-        updateVelocitiesFromForces(stepsize / 2);
-        updatePositions(stepsize / 2);
-        updateVelocitiesRandomly(stepsize);
-        updatePositions(stepsize / 2);
-        evaluateForces();
-        updateVelocitiesFromForces(stepsize / 2);
+        for (t = 0; t < 100; t ++ ) {
+            updateVelocitiesFromForces(stepsize / 2);
+            updatePositions(stepsize / 2);
+            updateVelocitiesRandomly(stepsize);
+            updatePositions(stepsize / 2);
+            evaluateForces();
+            updateVelocitiesFromForces(stepsize / 2);
 
+
+        }
+
+        E = evaluateEnergy();
+        //if (E < min_energy) {min_energy = E; console.log(min_energy); recenter(); setMeshesToPositions(); }
+        if (E < min_energy) {min_energy = E; console.log(min_energy / epsilon);}
+
+        recenter();
         setMeshesToPositions();
+
     }
 
     animate();
